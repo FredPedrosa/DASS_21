@@ -1,0 +1,464 @@
+---
+title: "DASS-21 Structural Analysis: Psychometric Properties and Predictors of Anxiety Symptoms Among Students at the Federal University of Ouro Preto"
+author: "Frederico Pedrosa"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+---
+
+This document details a comprehensive data analysis undertaken to: 1) evaluate the psychometric properties (internal structure validity and reliability) of the Depression, Anxiety, and Stress Scale-21 (DASS-21) and 2) identify sociodemographic and lifestyle factors predicting anxiety symptoms within a sample of undergraduate students at the Federal University of Ouro Preto. These analyses were conducted using data from the research study 'Acute and chronic effects of receptive music therapy with the therapeutic gong in individuals with anxiety symptoms' (Original title: 'Efeitos agudos e crônicos da musicoterapia receptiva com o gongo terapêutico em indivíduos com sintomas de ansiedade'). All enrolled individuals provided informed consent and completed the DASS-21. The overall study received ethical approval from the Research Ethics Committee of the Federal University of Ouro Preto, Brazil (Certificate of Presentation for Ethical Consideration - CAAE: 77536623.2.0000.5150).
+
+# **Data import and cleaning**
+
+259 paticipants consent with participation
+
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(kableExtra)
+library(knitr)
+library(mice)
+library(psych)
+library(lavaan)
+library(semTools)
+library(semPlot)
+library(olsrr)
+library(car)
+library(lm.beta)
+library(bootnet)
+library(qgraph)
+
+data <- read_excel("~/PedroOP/dados_limpos.xlsx")
+data <- data[c(-88,-89,-90,-91)] #empty columns
+```
+
+## **Proportions of academic community participating.**
+
+The initial dataset comprised N=259 participants. The Comunidade variable was recoded from Portuguese to English categories. The distribution of participants across these academic community categories is presented below:
+
+```{r} 
+# Total number of participants
+total <- nrow(data)
+
+# Recode community categories to English
+data$Community <- dplyr::recode(data$Comunidade,
+                                "Comunidade Externa" = "External Community",
+                                "Estudante de graduação" = "Undergraduate Student",
+                                "Estudante de pós-graduação" = "Graduate Student",
+                                "Servidor Docente" = "Faculty Staff",
+                                "Servidor Técnico" = "Technical Staff")
+
+# Number of participants in each community category
+(community <- table(data$Community))
+
+# Calculate the percentage for each category
+percent_community <- (community / total) * 100
+
+# Result
+round(percent_community, 2)
+```
+Given that undergraduate students represented 83.78% (n=217) of the total sample, and to ensure a more homogeneous group for the primary analyses of anxiety psychometrics and predictors, the dataset was subsetted to include only these participants. All subsequent analyses are based on this subgroup.
+
+```{r}
+data <- subset(data, Community == "Undergraduate Student")
+DASS <- data[c(64:84)]
+sum(is.na(DASS))
+```
+## **Data imputation**
+
+A single missing value was identified on item i15 (verificado pela saída de mice que se repete i15) of the DASS-21 within the undergraduate student subsample. To handle this missing data point, multiple imputation using Predictive Mean Matching (PMM) was performed via the mice package. PMM is suitable for imputing missing values in psychometric scales with ordinal item responses. We specified m=5 imputed datasets and maxit=50 iterations.
+
+```{r imputation, message=FALSE, warning=FALSE} 
+DASS <- data[c(64:84)]
+
+imputed_data <- mice(DASS, 
+                     m = 5, 
+                     maxit = 50, 
+                     method = 'pmm', 
+                     seed = 500,
+                     printFlag = FALSE) 
+
+
+DASS_complete <- complete(imputed_data)
+data[c(64:84)] <- DASS_complete 
+
+DASS <- data[c(64:84)]
+sum(is.na(DASS))
+```
+For the primary analyses (CFA and regression), the first of the five imputed datasets was extracted using complete(imputed_data) to create a complete DASS-21 dataset for all 217 undergraduate students. This approach was chosen for simplicity given the minimal amount of missing data (a single value). Subsequent analyses proceed with this completed dataset.
+
+# **Sociodemographic data**
+
+* Age: Mean = 25.89 (SD = 5.94, min = 18, max = 52)
+* Ethnicity/Race: 47.0% White, 46.54% Black/Brown, 6.45% Other
+* Sex: Female = 81.10%; Male = 18.89%
+* Gender: Cisgender woman = 78.34%; Cisgender man = 17.51%; Non-binary = 2.76%; Other = 1.38% each
+* Religion: Christian = 46.54%, No religion = 37.77%, Other = 5.99%, Atheist = 5.53%, African-based religions = 4.61%
+* Yoga practice: No = 90.78%, Yes = 9.22%
+* Exercise: No = 51.15%, Yes = 48.85%
+* Sleep satisfaction: No = 73.73%, Yes = 26.27%
+* Mental disorder diagnosis: No = 39.63%, Yes = 60.37%
+  
+```{r setup_sociodem_table_FIXED, include=FALSE}
+
+# 1. Age
+age_stats <- psych::describe(data$Idade)
+age_summary <- data.frame(
+  Characteristic = "Age (Years)",
+  # Category = "N=217", # Esta coluna não é necessária para o pivot_longer da forma que queremos
+  Mean_SD = paste0(round(age_stats$mean, 2), " (", round(age_stats$sd, 2), ")"),
+  Median = as.character(round(age_stats$median, 2)), # Convertido para character
+  Min_Max = paste0(age_stats$min, "-", age_stats$max)
+)
+
+# Agora o pivot_longer deve funcionar
+age_display <- age_summary %>%
+  tidyr::pivot_longer(cols = c(Mean_SD, Median, Min_Max), 
+                      names_to = "Statistic", 
+                      values_to = "Value") %>%
+  # Adicionar a coluna Characteristic de volta, se ela foi removida ou para garantir que está lá
+  dplyr::mutate(Characteristic = "Age (Years)") %>% 
+  dplyr::select(Characteristic, Category = Statistic, `Value (%)` = Value)
+
+# Ajustar os nomes das categorias para a tabela final de idade
+age_display$Category <- dplyr::recode(age_display$Category,
+                                      "Mean_SD" = "Mean (SD)",
+                                      "Median" = "Median",
+                                      "Min_Max" = "Range (Min-Max)")
+
+
+# 2. Ethnicity (e outras variáveis categóricas permanecem como antes)
+data$Ethnicity_Eng <- dplyr::recode(data$Etnia,
+                                    "Branca" = "White",
+                                    "Outras" = "Other",
+                                    "Preta/Parda" = "Black/Brown")
+
+
+# Função para recodificar colunas Sim/Não diretamente no dataframe 'data'
+recode_yes_no_column <- function(main_df, original_col_name, new_col_suffix_eng) {
+  new_col_full_name <- paste0(original_col_name, new_col_suffix_eng) # Ex: "Yoga/Meditação_Eng"
+  # Precisamos garantir que o nome da coluna seja válido
+  # Se original_col_name já for o que queremos usar para a nova coluna (sem o _Eng), simplifica
+  # Vamos assumir que var_eng_name na sua função calculate_n_percent é o nome final da coluna
+  
+  # Para simplificar, vamos recodificar diretamente no 'data' usando o nome final esperado por calculate_n_percent
+  # Exemplo: data$"Yoga/Meditation Practice_Eng"
+  
+  # Os nomes das colunas que você passou para create_yes_no_summary eram, por exemplo:
+  # var_pt = "Yoga/Meditação"
+  # var_eng_name = "Yoga/Meditation Practice"
+  # Isso criaria uma coluna "Yoga/Meditation Practice_Eng"
+  
+  # Vamos criar as colunas recodificadas em 'data' primeiro
+  
+  return(main_df) # Não é necessário retornar se modificar globalmente, mas bom para o pipe
+}
+
+# Recodificar as colunas Sim/Não no dataframe 'data'
+data$"Yoga/Meditation Practice_Eng" <- dplyr::recode(data$`Yoga/Meditação`,
+                                                     "Não." = "No", "Não" = "No",
+                                                     "Sim." = "Yes", "Sim" = "Yes")
+data$"Physical Exercise_Eng" <- dplyr::recode(data$Exercícios_físicos,
+                                              "Não." = "No", "Não" = "No",
+                                              "Sim." = "Yes", "Sim" = "Yes")
+data$"Sleep Satisfaction_Eng" <- dplyr::recode(data$Satisfação_sono,
+                                               "Não." = "No", "Não" = "No",
+                                               "Sim." = "Yes", "Sim" = "Yes")
+data$"Mental Illness Diagnosis (Self-Reported)_Eng" <- dplyr::recode(data$Transtorno_mental,
+                                                                     "Não." = "No", "Não" = "No",
+                                                                     "Sim." = "Yes", "Sim" = "Yes")
+
+
+# Agora a função calculate_n_percent deve funcionar
+# porque as colunas "_Eng" existem em 'data'
+
+# Função para calcular N (%) (como antes)
+calculate_n_percent <- function(df, var_col_name_eng) {
+  # Verifica se a coluna existe e tem dados
+  if (!var_col_name_eng %in% names(df) || all(is.na(df[[var_col_name_eng]]))) {
+    warning(paste("Column", var_col_name_eng, "not found or all NA in calculate_n_percent."))
+    return(data.frame(Category = character(0), N_Percent = character(0))) # Retorna df vazio
+  }
+  counts <- table(df[[var_col_name_eng]])
+  if (length(counts) == 0) {
+    warning(paste("Table for column", var_col_name_eng, "is empty in calculate_n_percent."))
+    return(data.frame(Category = character(0), N_Percent = character(0)))
+  }
+  percents <- round(prop.table(counts) * 100, 2)
+  n_percent_strings <- paste0(counts, " (", percents, "%)")
+  
+  summary_df <- data.frame(
+    Category = names(counts),
+    N_Percent = n_percent_strings
+  )
+  return(summary_df)
+}
+
+
+# Recriar summaries para formato N (%)
+ethnicity_n_percent <- calculate_n_percent(data, "Ethnicity_Eng")
+ethnicity_n_percent$Characteristic <- "Ethnicity/Race"
+
+# Recodificar Biological Sex e Gender também (se ainda não feito)
+data$Biological_Sex_Eng <- dplyr::recode(data$Sexo_biológico,
+                                         "Feminino" = "Female",
+                                         "Masculino" = "Male")
+sex_n_percent <- calculate_n_percent(data, "Biological_Sex_Eng")
+sex_n_percent$Characteristic <- "Biological Sex"
+
+data$Gender_Eng <- dplyr::recode(data$Gênero,
+                                 "Feminino" = "Woman (Cisgender)",
+                                 "Masculino" = "Man (Cisgender)",
+                                 "Não Binário" = "Non-binary",
+                                 "Outros" = "Other",
+                                 "Trans" = "Transgender")
+gender_n_percent <- calculate_n_percent(data, "Gender_Eng")
+gender_n_percent$Characteristic <- "Gender Identity"
+
+data$Religion_Eng <- dplyr::recode(data$Religião,
+                                   "Ateu" = "Atheist",
+                                   "Cristianismo" = "Christianity",
+                                   "Matriz Africana" = "African-based religions",
+                                   "Outros" = "Other",
+                                   "Sem Religião" = "No religion/Agnostic")
+religion_n_percent <- calculate_n_percent(data, "Religion_Eng")
+religion_n_percent$Characteristic <- "Religion"
+
+# Agora para as variáveis Sim/Não, usando as colunas _Eng que acabamos de criar em 'data'
+yoga_n_percent <- calculate_n_percent(data, "Yoga/Meditation Practice_Eng")
+if(nrow(yoga_n_percent) > 0) yoga_n_percent$Characteristic <- "Yoga/Meditation Practice" else yoga_n_percent <- NULL # Lida com df vazio
+
+exercise_n_percent <- calculate_n_percent(data, "Physical Exercise_Eng")
+if(nrow(exercise_n_percent) > 0) exercise_n_percent$Characteristic <- "Physical Exercise" else exercise_n_percent <- NULL
+
+sleep_n_percent <- calculate_n_percent(data, "Sleep Satisfaction_Eng")
+if(nrow(sleep_n_percent) > 0) sleep_n_percent$Characteristic <- "Sleep Satisfaction" else sleep_n_percent <- NULL
+
+mental_illness_n_percent <- calculate_n_percent(data, "Mental Illness Diagnosis (Self-Reported)_Eng")
+if(nrow(mental_illness_n_percent) > 0) mental_illness_n_percent$Characteristic <- "Mental Illness Diagnosis (Self-Reported)" else mental_illness_n_percent <- NULL
+
+
+# Juntar todas as variáveis categóricas
+demographic_table_categorical <- dplyr::bind_rows(
+  ethnicity_n_percent,
+  sex_n_percent,
+  gender_n_percent,
+  religion_n_percent,
+  yoga_n_percent,
+  exercise_n_percent,
+  sleep_n_percent,
+  mental_illness_n_percent
+) %>%
+  # Filtrar linhas completamente vazias se alguma variável não produziu sumário
+  dplyr::filter(if_any(everything(), ~ !is.na(.))) %>% 
+  dplyr::select(Characteristic, Category, `N (%)` = N_Percent)
+
+
+# Combinar tudo (usando age_display que agora deve funcionar)
+colnames(age_display)[3] <- "N (%)" # Embora seja "Value", para o bind_rows
+
+final_demographic_table <- dplyr::bind_rows(
+  age_display,
+  demographic_table_categorical
+)
+
+knitr::kable(final_demographic_table, 
+             caption = "Sociodemographic Characteristics of Undergraduate Student Participants (N=217)",
+             col.names = c("Characteristic", "Category", "Value / N (%)"),
+             align = 'lcr') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  pack_rows(index = table(factor(final_demographic_table$Characteristic, levels = unique(final_demographic_table$Characteristic))))
+
+```
+
+```{r display_sociodem_table_FIXED, echo=FALSE, message=FALSE, warning=FALSE}
+# Usar kable para exibir a tabela
+knitr::kable(final_demographic_table, 
+             caption = "Sociodemographic Characteristics of Undergraduate Student Participants (N=217)",
+             col.names = c("Characteristic", "Category", "Value / N (%)"),
+             align = 'lcr') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  pack_rows(index = table(factor(final_demographic_table$Characteristic, levels = unique(final_demographic_table$Characteristic))))
+```
+
+# **Evidence of internal structure validity and reliability of the DASS-21**
+
+To evaluate the internal structure validity of the DASS-21, a Confirmatory Factor Analysis (CFA) was conducted on the undergraduate student data (N=217). The analysis tested the widely accepted three-factor model (Anxiety, Depression, Stress). Given the ordinal nature of the DASS-21 items (responses on a Likert-type scale), the Weighted Least Squares Mean and Variance adjusted (WLSMV) estimator was employed. Factor variances were standardized (std.lv=TRUE) for model identification and interpretation
+
+```{r}
+model_DASS <- 
+'
+ANX =~ i2 + i4 + i7 + i9 + i15 + i19 + i20
+
+STR =~ i1 + i6 + i8 + i11 + i12 + i14 + i18
+
+DEP =~ i3 + i5 + i10 + i13 + i16 + i17 + i21
+'
+
+fit_model_DASS <- cfa(model_DASS, data = data, ordered = T, 
+                     estimator = "WLSMV", std.lv=TRUE)
+
+fitMeasures(fit_model_DASS, fit.measures = c("chisq","df","cfi", "tli", "rmsea", 
+                                            "rmsea.ci.lower", "rmsea.ci.upper"))
+
+
+semplot_DASS <- semPaths(fit_model_DASS,"std",layout="circle2",residuals=F,
+                         sizeLat=7,sizeLat2=7,edge.color="black",edge.label.cex=1.0,
+                         mar=c(4,4,4,4),esize=7,curvePivot = T, intercepts=F,
+                         thresholds = F, sizeInt = 10,
+                         nCharNodes=0,sizeMan=6, edge.label.position=0.5)
+```
+Model fit was assessed using several indices. The obtained fit statistics were: $\chi$(186) = 258.393, p < .001; CFI = 0.996; TLI = 0.996; RMSEA = 0.042 (90% CI: 0.029, 0.054). While the chi-square test was significant, which is common with larger sample sizes, the CFI and TLI values exceed the recommended cutoff of >0.95, and the RMSEA is below the <0.06 (or <0.08) threshold, with its confidence interval also indicating good fit. Collectively, these indices suggest an adequate fit of the three-factor model to the data.
+
+## **Testing reliability**
+
+Internal consistency reliability for the DASS-21 subscales was examined using multiple coefficients appropriate for factor analytic models and ordinal data.
+
+As shown in the output below, all subscales demonstrated good to excellent reliability. Ordinal alpha coefficients, which are suitable for categorical indicators, were 0.89 (Anxiety), 0.90 (Stress), and 0.93 (Depression). McDonald's omega hierarchical (omega) values were also robust: 0.88 (Anxiety), 0.87 (Stress), and 0.91 (Depression). Average Variance Extracted (AVE) values were all above 0.50, supporting convergent validity within each factor
+
+Composite reliability (CR), another measure of internal consistency based on the factor model, was also calculated. The CR values were 0.90 for Anxiety, 0.93 for Depression, and 0.90 for Stress, further supporting the reliability of the subscales.
+
+
+```{r message=FALSE}
+round(semTools::reliability(fit_model_DASS), 2)
+source("comp_reliability.R")
+comp_reliability(fit_model_DASS)
+```
+
+## **Estimation of factor scores based on the factor structure**
+
+Factor scores representing latent Anxiety, Stress, and Depression levels for each participant were estimated from the fitted CFA model using the lavPredict function in lavaan (empirical Bayes modal estimates). These scores were then merged back into the main dataset for use as outcome variables in subsequent regression analyses.
+
+```{r}
+#Factorial sores (FCA - DASS)
+latent_scores_DASS <- lavaan::lavPredict(fit_model_DASS, newdata = data, 
+                                    type = "lv")
+#Latent scores
+
+ANX_fscores <- latent_scores_DASS[, "ANX"]
+STR_fscores <- latent_scores_DASS[, "STR"]
+DEP_fscores <- latent_scores_DASS[, "DEP"]
+
+data$ANX_fscores <- ANX_fscores 
+data$STR_fscores <- STR_fscores 
+data$DEP_fscores <- DEP_fscores 
+```
+
+# **Testing which sociodemographical better predicts anxiety**
+
+To investigate potential predictors of anxiety (as measured by the DASS-21 Anxiety factor scores), a multiple linear regression analysis was conducted. The predictor variables considered were all of socio-demographical. A stepwise forward selection procedure based on the Akaike Information Criterion (AIC) was employed to identify the most parsimonious and statistically significant model with the remaining variablesYoga, Sleeping satisfaction and mental illness.
+
+* The presence of a mental disorder was the strongest individual predictor, independently explaining approximately 7.5% of the variance in anxiety scores.
+* When sleep satisfaction was added to the model, it explained an additional 3.3% of the variance in anxiety, beyond what was already accounted for by mental disorder.
+* Finally, the inclusion of yoga/meditation practice in the model contributed to explaining a further 2.3% of the variance in anxiety scores, after controlling for the effects of mental disorder and sleep satisfaction.
+
+In total, the model incorporating these three variables (mental disorder, sleep satisfaction, and yoga/meditation) was able to explain approximately 13.1% (R²) of the variability in participants' anxiety levels."
+
+```{r}
+#setting linear model
+ansiedade <- lm(ANX_fscores ~  
+                + `Yoga/Meditação` + Satisfação_sono 
+                + Transtorno_mental, data = data)
+
+summary(ansiedade)
+
+
+
+#backward method
+ols_step_forward_aic(ansiedade)
+ols_step_forward_p(ansiedade)
+
+#betas 
+betas <- lm.beta(ansiedade)$standardized.coefficients
+betas
+```
+
+## **Checking Model Assumptions**
+
+Diagnostic checks indicated that the assumptions for linear regression (normality of residuals, homoscedasticity, and independence of errors) were adequately met for the final model.
+
+```{r}
+
+#Residuals normality
+shapiro.test(resid(ansiedade)) #p > 0,05 
+#Homoscedasticity
+ols_test_breusch_pagan(ansiedade) #p > 0,05 
+#Residual autocorrelations
+durbinWatsonTest(ansiedade)   # p > 0,05
+
+```
+
+
+# **Network Psychometric Analysis**
+
+A network psychometric analysis was conducted to explore the specific interrelationships among the DASS-21 anxiety symptoms (items i2, i4, i7, i9, i15, i19, i20). The network structure was estimated using the estimateNetwork function from the bootnet package, employing the EBICglasso (Extended Bayesian Information Criterion for Graphical LASSO) method with a tuning parameter of 0.5. This method performs regularization to yield a sparse network by shrinking small partial correlations to zero. Centrality indices (Strength, Closeness, Betweenness, and Expected Influence) were computed to identify influential symptoms. The stability of these centrality estimates was assessed via case-dropping bootstrap procedures (nBoots = 1000).
+
+Network analysis of the DASS-21 anxiety items revealed several key insights into the structure of anxiety symptoms among the participants.
+
+* The item 'i15: I felt I was close to panic' emerged as the most central symptom, exhibiting the highest strength centrality and expected influence. This suggests that feeling close to panic is a highly interconnected symptom within the anxiety network, strongly co-occurring with other anxiety symptoms and potentially playing a significant role in the overall experience or maintenance of anxiety.
+
+* In terms of closeness centrality, which indicates how quickly a symptom can reach other symptoms in the network, 'i9: I was worried about situations in which I might panic and make a fool of myself' and 'i19: I was aware of the action of my heart in the absence of physical exertion' were equally prominent. This implies these symptoms are relatively well-connected and can efficiently 'transmit' or influence other symptoms in the network.
+
+* The items 'i19: I was aware of the action of my heart in the absence of physical exertion' and 'i20: I felt scared without any good reason' showed the highest betweenness centrality, suggesting they frequently lie on the shortest paths connecting other pairs of symptoms. However, the correlation stability analysis indicated that the betweenness centrality measure was not reliable (CS-coefficient = 0.051, below the desired 0.7 threshold). Therefore, interpretations based on betweenness centrality should be made with extreme caution, as this metric may not be stable with smaller subsets of the data.
+
+* Conversely, the stability analysis confirmed that strength, expected influence, and closeness centrality measures were substantially more reliable (CS-coefficients of 0.594 or higher), lending greater confidence to the findings regarding items i15, i9, and i19 for these respective centrality indices.
+
+```{r} 
+# Selecting anxiety items
+anx <- data[, c("i2", "i4", "i7", "i9", "i15", "i19", "i20")]
+Network <- estimateNetwork(anx,  
+                           default = "EBICglasso", weighted = TRUE, tuning = 0.5)
+
+
+labels <- c("i2: I was aware of dryness of my mouth",
+            "i4: I experienced breathing difficulty (e.g. excessively rapid breathing, breathlessness in the absence of physical exertion)",
+            "i7: I experienced trembling (e.g. in the hands)",
+            "i9: I was worried about situations in which I might panic and make a fool of myself",
+            "i15: I felt I was close to panic",
+            "i19: I was aware of the action of my heart in the absence of physical exertion (e.g. sense of heart rate increase, heart missing a beat)",
+            "i20: I felt scared without any good reason") 
+
+plot(Network, layout = "spring", theme = "classic")
+print(labels)
+```
+
+## **Estimation of centrality** 
+
+```{r}
+centralityPlot(Network, scale = c("z-scores"), 
+               include = c("Strength","Closeness","Betweenness","ExpectedInfluence"), 
+               theme_bw = TRUE, print = TRUE,
+               verbose = TRUE, weighted = TRUE, 
+               decreasing = T)
+
+#centralityTable(Network, standardized = TRUE,  relative = FALSE, weighted =
+#                  TRUE, signed = TRUE)
+
+centrality <- centrality_auto(Network)
+centrality$node.centrality
+```
+
+
+```{r message=FALSE}
+#Centrality Stability 
+boot1 <- bootnet(Network, nBoots = 1000, type = "case", 
+                 statistics = c("strength", "closeness", "betweenness", "expectedInfluence"),
+                 verbose = FALSE)
+
+plot(boot1, statistics= c("strength","closeness","betweenness","expectedInfluence"))    
+
+#CS-coefficient
+corStability(boot1)
+
+```
+
+```{r}
+sessionInfo()
+```
+
+
